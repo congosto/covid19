@@ -1,0 +1,817 @@
+---
+title: "Resumen y evolución de hospitalizaciones, UCIs y fallecimientos por el COVID19"
+output:
+  html_document:
+    df_print: paged
+---
+# Semana 18 2021
+
+
+## Resumen
+
+### preparar datos para gráficas
+
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+require(RCurl)
+library(lubridate)
+
+
+url_file_prov<-"https://raw.githubusercontent.com/montera34/escovid19data/master/data/output/covid19-provincias-spain_consolidated.csv"
+url_file_poblacion <- "https://raw.githubusercontent.com/montera34/escovid19data/master/data/original/provincias-poblacion.csv"
+
+provincias <- read.csv( url_file_prov,encoding = "UTF-8")
+provincias_poblacion <- read.csv( url_file_poblacion,encoding = "UTF-8")
+
+
+provincias  <- provincias  %>%
+               filter (date >= "2020-12-02")  
+provincias$date <-  as.Date(provincias$date,format= "%Y-%m-%d")
+provincias <- provincias  %>% 
+                select (date,province,ccaa,hospitalized,intensive_care,daily_deaths) %>% 
+                merge(select(provincias_poblacion,provincia,poblacion,ine_code),
+                      by.x = "province", by.y = "provincia"  ) %>% 
+                mutate(hospitalized_tot = ifelse(ccaa == "Andalucía" |
+                                                   ccaa == "Madrid, Comunidad de" |
+                                                   ccaa == "Cantabria" |
+                                                   ccaa == "Murcia" |
+                                                   ccaa == "Cantabria",hospitalized ,
+                                                                       hospitalized+intensive_care)) %>%
+                mutate (hospitalized_nor =hospitalized_tot *100000/ poblacion )  %>%
+                mutate (intensive_care_nor = intensive_care *100000/ poblacion)  %>%
+                mutate (daily_deaths_nor =daily_deaths *100000/ poblacion ) %>%
+                mutate (year = as.integer(format(date, format="%Y")) -2020) %>%
+                mutate (week = (as.integer(format(date, format="%U")) +1)+(52*year))  %>%
+                arrange (week) 
+
+
+
+```
+### Plantilla de gráficos
+```{r}
+theme_a <- function(base_size = 12,
+                    base_family = "sans"
+                           )
+    {
+ 
+    tema <-
+        theme_bw(base_size=base_size) +
+          
+        theme(legend.position="top") +
+        theme(legend.text = element_text(size=base_size+1,family = base_family)) +
+        theme(plot.title=element_text(size=base_size+2, 
+                                      vjust=1.25, 
+                                      family=base_family, 
+                                      hjust = 0.5
+                                      )) +
+        
+        theme(plot.subtitle=element_text(size=base_size, family = base_family))  +
+        theme(text = element_text(size=base_size+1,family = base_family)) +
+        theme(axis.text.x=element_text(size=base_size,family = base_family)) +
+        theme(axis.text.y=element_text(size=base_size, family = base_family)) +
+
+        theme(axis.title.x=element_text(size=base_size, vjust=0, family = base_family)) +
+        theme(axis.title.y=element_text(size=base_size, vjust=1.25, family = base_family)) +
+        theme(plot.caption=element_text(size=base_size-2, family = base_family)) +
+        theme(strip.text = element_text(size=base_size+1, family = base_family)) +
+        theme(strip.text.x = element_text(size=base_size, family = base_family)) +
+        theme(strip.text.y = element_text(size=base_size,, family = base_family)) 
+ 
+    return (tema)
+}
+```
+
+
+### Gráfica de tendencia
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=8}
+
+tendencia <- function (provincias,indicator,text_indicator,max_size,skip,left_margin){
+  
+library(ggalt)
+  
+weeks <- unique(provincias$week)
+first_week <- min(weeks,na.rm = TRUE)  
+last_week <- max(weeks,na.rm = TRUE)
+last_week_text <- last_week %% 53
+name_file <- paste0("images/diferencias_",indicator,"_tendencia.png")
+chart_title <- paste("Diferencia de",text_indicator, "entre las semanas",last_week_text-1, "y",last_week_text )
+
+diff <- mutate (provincias,indicator=provincias[[indicator]]) %>%
+    filter (week == last_week | week == last_week-1 ) %>%
+    filter (!is.na (indicator) ) %>%   
+    select (week,province,indicator,ccaa)  %>%
+    group_by(week,province,ccaa) %>%
+    summarise ( indicator_week = mean (indicator), .groups = 'drop') %>%
+    mutate (indicator_last_week = ifelse(week == last_week, indicator_week, NA)) %>%
+    mutate (indicator_pre_last_week = ifelse(week == last_week-1, indicator_week, NA))%>%
+    group_by(province,ccaa) %>%
+    summarise ( indicator_last_week = sum (indicator_last_week,na.rm = TRUE),
+                indicator_pre_last_week = sum (indicator_pre_last_week,na.rm = TRUE) ,
+                indicator_diff = indicator_last_week - indicator_pre_last_week,
+                .groups = 'drop') %>%
+    filter (indicator_last_week > 0 & indicator_pre_last_week > 0,) %>%
+    mutate(Color = ifelse(indicator_diff >0, "Incremento", "Descenso"))
+
+grafica <-  
+  ggplot(data = diff) + 
+  geom_segment(aes(x=indicator_pre_last_week, 
+               xend=indicator_last_week, 
+               y= reorder(province,indicator_last_week), 
+               yend=province, 
+               color=Color),
+               arrow = arrow(length=unit(0.20,"cm"), ends="last", type = "closed"),size=1)+
+  geom_line (aes(x=indicator_last_week, 
+               y= as.numeric(reorder(province,indicator_last_week))),
+               size=4, alpha=0.5, color = "gray") +
+  labs(x = "Variación", y = "Provincias",
+            caption = "By @congosto\nFuente: @escovid19data. https://github.com/montera34/escovid19data",
+            title = chart_title,
+            subtitle="Normalizado a 100.000 habitantes.Los valores semanales se calculan como media\nEn rojo las provincias que aumentan las hospitalizaciones, en azul las que disminuyen")+
+  scale_colour_manual('', values = c('Descenso'='steelblue4', 'Incremento'='red4')) +
+  scale_x_continuous(name=text_indicator,position = "top",
+                     limit = c(-left_margin,max_size),
+                     breaks=seq(0, max_size, by = skip), 
+                     #expand =  c(0,0),
+                     sec.axis = dup_axis() ) +
+  theme_a()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.ticks.y=element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray")) +
+
+  ggsave(name_file,width = 200, height = 200,unit="mm")
+return (grafica)
+
+}
+```
+
+
+
+### Hospitalizados en la última semana (variación)
+
+Gráfica sin nombres de provincia para destacar la tendencia.
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=7, fig.height=7}
+
+res <-  tendencia (provincias,"hospitalized_nor", "Hospitalizados",50,25,1)
+plot(res)
+
+```
+
+### Gráfica de distribución
+
+
+```{r}
+
+distribucion <- function (provincias,indicator,text_indicator) {
+  
+weeks <- unique(provincias$week)
+first_week <- min(weeks,na.rm = TRUE)  
+last_week <- max(weeks,na.rm = TRUE)
+name_file <- paste0("images/diferencias_",indicator,"_distribucion.png")
+chart_title <- paste("Distribución de",text_indicator, "el último mes" )
+
+
+df <- mutate (provincias,indicator=provincias[[indicator]]) %>%
+      filter (!is.na (indicator) ) %>%   
+      rename (fecha = date) %>%
+      filter (week > last_week -4) %>%
+      select (fecha,week,province,indicator)  %>%
+      group_by(week,province)%>%
+      summarise ( indicator_week = mean (indicator),
+                  fecha = lubridate::ymd( "2021-01-01" ) + lubridate::weeks( week - 53 ),
+                  .groups = 'drop')
+
+grafica <- ggplot(data = df, 
+       aes( x=fecha, y=indicator_week, group = week)) + 
+       geom_boxplot(color="red4") +
+       stat_summary(geom="text", fun=quantile,
+                   aes(label=sprintf("%1.1f", ..y..)), 
+                   position=position_nudge(x=3.50), size=3.5) +
+       labs( title = chart_title,
+             caption = "By @congosto\nFuente: @escovid19data. https://github.com/montera34/escovid19data")+
+       guides(color = FALSE)+
+       theme_a()+
+       theme(axis.title.y=element_blank(),
+          axis.title.x=element_blank(),
+          panel.grid.major.y = element_blank(),
+          legend.position="top",legend.text = element_text(size=11)) 
+
+ggsave(name_file,width = 200, height = 125,unit="mm")
+return (grafica)
+}
+
+```
+
+### Distribución de hospitalizaciones 
+
+
+```{r}
+res <-  distribucion (provincias,"hospitalized_nor", "Hospitalizados")
+plot(res)
+
+```
+### Distribución de UCI 
+
+
+```{r}
+res <-  distribucion (provincias,"intensive_care_nor", "UCI")
+plot(res)
+
+```
+### Gráfica de variación (incremento-descenso)
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=14}
+
+dumbbell_A <- function (provincias,indicator,text_indicator,max_size,skip,left_margin){
+  
+library(ggalt)
+  
+weeks <- unique(provincias$week)
+first_week <- min(weeks,na.rm = TRUE)  
+last_week <- max(weeks,na.rm = TRUE)
+last_week_text <- last_week %% 53
+name_file <- paste0("images/diferencias_",indicator,"_incremento_dumbbell.png")
+chart_title <- paste("Diferencia de",text_indicator, "entre las semanas",last_week_text-1, "y",last_week_text )
+
+
+diff  <- mutate (provincias,indicator=provincias[[indicator]]) %>%
+         filter (!is.na (indicator) ) %>%
+         filter (week == last_week | week == last_week-1 ) %>%
+         select (week,province,indicator)  %>%
+         group_by(week,province) %>%
+         summarise ( indicator_week = mean (indicator), .groups = 'drop') %>%
+         mutate(indicator_last_week = ifelse(week == last_week, indicator_week, NA))  %>%
+         mutate(indicator_pre_last_week = ifelse(week == last_week-1, indicator_week, NA)) %>%
+         group_by(province) %>%
+         summarise ( indicator_last_week = sum (indicator_last_week,na.rm = TRUE), 
+                indicator_pre_last_week = sum (indicator_pre_last_week,na.rm = TRUE) ,
+                indicator_diff = indicator_last_week - indicator_pre_last_week,na.rm = TRUE,
+                .groups = 'drop') %>%
+         filter (indicator_last_week > 0 & indicator_pre_last_week > 0) %>%
+         mutate(Color = ifelse(indicator_diff >0, "Incremento", "Descenso"),
+                ajuste_text = ifelse(indicator_diff >=0, -0.2,1.2),
+                ajuste_perc = ifelse(indicator_diff > 0,  1.2,-0.2))
+
+p <- 
+  ggplot( data = diff) + 
+  geom_segment(aes(x=indicator_pre_last_week, 
+               xend=indicator_last_week, 
+               y= reorder(province,indicator_last_week), 
+               yend=province, 
+               color=Color),
+              arrow = arrow(length=unit(0.20,"cm"), ends="last", type = "closed"),size=1)+
+  geom_line (aes(x=indicator_last_week, 
+               y= as.numeric(reorder(province,indicator_last_week))),
+               size=4, alpha=0.5, color = "gray") +
+  geom_text(aes(x=indicator_last_week, 
+                y= reorder(province,indicator_last_week), color=Color, label = province, 
+                hjust= ajuste_text),
+               size=4, vjust=0, show.legend = FALSE ) +
+  geom_text(aes(x=indicator_pre_last_week, 
+                y= reorder(province,indicator_last_week), color=Color,label = round(indicator_diff,1),
+                hjust= ajuste_perc),
+                size=4, vjust=0, show.legend = FALSE ) +
+  labs(x = "Variación", y = "Provincia",
+       caption = "By @congosto\nFuente: @escovid19data. https://github.com/montera34/escovid19data",
+       title = chart_title,
+       subtitle="Normalizado a 100.000 habitantes.Los valores semanales se calculan como media\nEn rojo las provincias que aumentan las hospitalizaciones, en azul las que disminuyen.\nLos números corresponden a la variación entre ambas semanas")+
+  scale_colour_manual('', values = c('Descenso'='steelblue4', 'Incremento'='red4')) +
+  scale_x_continuous(name=text_indicator,position = "top", 
+                     limit = c(-left_margin,max_size),
+                     breaks=seq(0, max_size, by = skip),
+                     sec.axis = dup_axis() ) +
+  theme_a()+
+  theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(colour = "gray")) +
+  
+ggsave(name_file,width = 200, height = 325,unit="mm")
+return (p)
+
+}
+```
+
+
+
+### Gráfica de variación (valor inicio-final)
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=14}
+
+dumbbell_B <- function (provincias,indicator,text_indicator,max_size,skip,left_margin){
+  
+library(ggalt)
+  
+weeks <- unique(provincias$week)
+first_week <- min(weeks,na.rm = TRUE)  
+last_week <- max(weeks,na.rm = TRUE) 
+last_week_text <- last_week %% 53
+
+name_file <- paste0("images/diferencias_",indicator,"_valor_dumbbell.png")
+chart_title <- paste("Diferencia de",text_indicator, "entre las semanas", last_week_text-1,"y",last_week_text  )
+diff <- mutate (provincias,indicator=provincias[[indicator]]) %>%
+        filter (!is.na (indicator) ) %>%
+        select (week,province,indicator)  %>%
+        group_by(week,province) %>%
+        summarise ( indicator_week = mean (indicator), .groups = 'drop') %>%
+        mutate(indicator_last_week = ifelse(week == last_week, indicator_week, NA))  %>%
+        mutate(indicator_pre_last_week = ifelse(week == last_week-1, indicator_week, NA)) %>%
+        group_by(province) %>%
+        summarise ( indicator_last_week = sum (indicator_last_week,na.rm = TRUE),
+                    indicator_pre_last_week = sum (indicator_pre_last_week,na.rm = TRUE) ,
+                   indicator_diff = indicator_last_week - indicator_pre_last_week,na.rm = TRUE,
+                   .groups = 'drop') %>%
+       filter (indicator_last_week > 0 & indicator_pre_last_week > 0) %>%
+       mutate(Color = ifelse(indicator_diff >0, "Incremento", "Descenso"),
+              text_last_week = ifelse(indicator_diff >0, paste(round(indicator_last_week,1),province),
+                                                     paste(province,round(indicator_last_week,1))),
+              ajuste_last_week = ifelse(indicator_diff >0, -0.2,1.2),
+              ajuste_pre_last_week = ifelse(indicator_diff >0 ,1.2, -0.2))
+
+p <-
+  ggplot(data = diff) + 
+    geom_segment(aes(x=indicator_pre_last_week, 
+                     xend=indicator_last_week, 
+                     y= reorder(province,indicator_last_week), 
+                     yend=province, 
+                     color=Color),
+                     arrow = arrow(length=unit(0.20,"cm"), ends="last", type = "closed"),size=1)+
+    geom_line (aes(x=indicator_last_week, 
+                     y= as.numeric(reorder(province,indicator_last_week))),
+                     size=4, alpha=0.7, color = "gray") +
+    geom_text(aes(x=indicator_last_week, 
+                     y= reorder(province,indicator_last_week), color=Color, 
+                     label = text_last_week,
+                     hjust=  ajuste_last_week),
+                     size=4, vjust=0, show.legend = FALSE ) +
+    geom_text(aes(x=indicator_pre_last_week, 
+                     y= reorder(province,indicator_last_week), color=Color,
+                     label = round(indicator_pre_last_week,1),
+                     hjust= ajuste_pre_last_week),
+                     size=4, vjust=0, show.legend = FALSE ) +
+    labs(x = "Variación", y = "Provincia",
+            caption = "By @congosto\nFuente: @escovid19data. https://github.com/montera34/escovid19data",
+            title = chart_title,
+            subtitle="Normalizado a 100.000 habitantes.Los valores semanales se calculan como media\nEn rojo las provincias que aumentan las hospitalizaciones, en azul las que disminuyen.\nLos números corresponden a la tasa de cada semana")+
+    scale_colour_manual('', values = c('Descenso'='steelblue4', 'Incremento'='red4')) +
+    scale_x_continuous(name=text_indicator,position = "top",
+                       limit = c(-left_margin,max_size),
+                       breaks=seq(0, max_size, by = skip),
+                       sec.axis = dup_axis() ) +
+    theme_a()+
+    theme(axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          axis.ticks.x=element_blank(),
+          panel.grid.major.y = element_blank(),
+          panel.grid.major.x = element_line(colour = "gray")) +
+ggsave(name_file,width = 200, height = 325, units = "mm")
+return (p)
+
+}
+
+```
+
+### Varación de hospitalizados en la última semana (incremento-descenso)
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=14}
+
+res <-  dumbbell_A (provincias,"hospitalized_nor", "Hospitalizados",50,25,5)
+plot(res)
+
+```
+
+### Variación de hospitalizados en la última semana (valor inicial y final)
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=14}
+
+res <-  dumbbell_B (provincias,"hospitalized_nor", "Hospitalizados",50,25,5)
+plot(res)
+
+```
+
+
+### Variación de UCI en la última semana (incremento-descenso)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=14}
+res <-  dumbbell_A (provincias,"intensive_care_nor", "UCI",15,5,1)
+plot(res)
+```
+
+### Variación de UCI en la última semana (valores)
+
+
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=14}
+
+res <-  dumbbell_B (provincias,"intensive_care_nor", "UCI",15,5,1.2)
+plot(res)
+
+```
+
+
+### Gráfica mapa calor
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+ 
+
+heat_map_resumen <- function (provincias,indicator,text_indicator){
+  
+weeks <- unique(provincias$week)
+first_week <- min(weeks,na.rm = TRUE)  
+last_week <- max(weeks,na.rm = TRUE)
+name_file <- paste0("images/tercera_ola_",indicator,"_resumen.png")
+chart_title <- paste("Evolución de", text_indicator)
+df <- mutate (provincias,indicator=provincias[[indicator]]) %>%
+    filter (!is.na (indicator) ) %>%
+    select (week,province,indicator)  %>%
+    group_by(week,province) %>%
+    summarise ( indicator_week = mean (indicator), .groups = 'drop') %>%
+    mutate(indicator_last_week = ifelse(week == last_week, indicator_week, 0))
+
+p <- 
+ggplot(data = df,
+       aes(x = week, y = reorder(province,(indicator_last_week)), fill=indicator_week)) +
+  geom_tile()+
+  geom_text(aes(label = round(indicator_week,1)), color="white", size=2.5,hjust=0.5, vjust=0.5 ) +
+  scale_fill_gradient(low = "steelblue", high = "red4")+
+  labs(y = "Provincia",
+       caption = "By @congosto\nFuente: @escovid19data. https://github.com/montera34/escovid19data",
+       title = chart_title, 
+       subtitle="Tercera Ola (desde el 2 de diciembre). Normalizado a 100.000 habitantes")+
+  scale_x_continuous(name="Semanas", breaks= weeks ,position = "top",
+                     sec.axis = dup_axis()) +
+  theme_a()+
+  theme(legend.title=element_blank(),
+        axis.ticks.y=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        axis.text.x=element_text(size=10),
+        axis.text.y=element_text(size=10),
+        legend.position="right") +
+ggsave(name_file)
+return (p)
+
+}
+
+
+
+```
+
+### Evolución de Hospitalizaciones
+
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=10 }
+
+res <-  heat_map_resumen (provincias,"hospitalized_nor", "Hospitalizados")
+plot(res)
+```
+
+
+### Evolución de UCI
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=10}
+
+
+res <-  heat_map_resumen (provincias,"intensive_care_nor", "UCI")
+plot(res)
+```
+
+### Evolución de Fallecimientos
+
+```{r message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=10, fig.height=14}
+res <-  heat_map_resumen (provincias,"daily_deaths_nor", "Fallecimientos")
+plot(res)
+```
+
+
+## Evolución de hospitalizaciones, UCIs
+
+
+
+Gráficas inspiradas en las realizadas por @BIOCOMSC1 sobre el riesgo del COVID19. Dan mucha información con pocos elementos (poca tinta), permitiendo ver la evolución, el estado actual y las zonas de riesgo. 
+[Risk Diagrams](https://biocomsc.upc.edu/en/shared/dr_spain_20200929-english.pdf)
+![Grafica](images/BIOCOMSC1_graph.png){withd=90}
+
+Cuando los datos tienen una componente temporal normalmente usamos un line chart. En estas gráficas se representa la relación de dos variables a través del tiempo de una manera distinta. Es un diagrama de puntos unidos según su evolución en el tiempo.
+
+No sé el nombre que reciben estos gráficos pero  William Phillips los utilizó 1958 para representar la evolución del desempleo y la inflación a través del tiempo, que ha pasado a la historia como [“la curva Phillips”](https://en.wikipedia.org/wiki/Phillips_curve).
+
+![la curva de Phillips](images/philips_diagram.jpg){withd=90}
+
+Las gráficas han sido mejoradas con [la idea de Maarten Lambrechts](https://twitter.com/maartenzam/status/1319063929994252288) de agrupar los datos semanalmente y señalar en el path el número de la semana.
+
+La fuente de datos es el repositorio [#escovid19data](https://github.com/montera34/escovid19data)
+
+Las gráficas muestran la relación entre  **UCI** y **hospitalizados** calculados como media semanal. 
+
+La semana de inicio es la 32 (3 Ago~9 Ago)
+
+El código de color usado es:
+
+* verde: semana de inicio
+* rojo: semana de fin de fin
+* azul: semanas intermedias
+
+### Orden de las gráficas es el del INE
+
+* 01	Andalucía
+* 02	Aragón
+* 03	Asturias, Principado de
+* 04	Balears, Illes
+* 05	Canarias
+* 06	Cantabria
+* 07	Castilla y León
+* 08	Castilla - La Mancha
+* 09	Cataluña
+* 10	Comunitat Valenciana
+* 11	Extremadura
+* 12	Galicia
+* 13	Madrid, Comunidad de
+* 14	Murcia, Región de
+* 15	Navarra, Comunidad Foral de
+* 16	País Vasco
+* 17  Rioja, La
+* 18	Ceuta
+* 19	Melilla
+
+
+
+### Grafica  connected scatterplot
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+connected_scatterplot_hos_UCI <- function  (provincias,autonomia) {
+
+  autonomia_text <- str_replace_all(autonomia, " ", "_")
+  name_file <- paste0("images/tercera_ola_",autonomia_text,"_UCI_vs_hospitalizados.png")
+  chart_title <- paste("Evolución de los Hospitalizados vs. UCI (media semanal) en",autonomia)
+  
+  df <- filter (provincias,ccaa == autonomia) %>%
+        filter (!is.na(hospitalized_nor)) %>%
+        filter (!is.na(intensive_care_nor)) %>%
+        mutate(tipo_fecha = ifelse(week == min(week), "primera", 
+                              ifelse(week == max(week), "ultima","otras"))) %>%
+        group_by(week,province) %>%
+        summarise ( hospitalized_nor_week = mean(hospitalized_nor),
+                    daily_death_nor_week = mean(daily_deaths_nor),
+                    intensive_care_nor_week = mean(intensive_care_nor),
+                    tipo_fecha = tipo_fecha,
+                    .groups = 'drop')  %>%
+                    arrange (week,province) 
+
+  p <- 
+  ggplot(data = df,
+         aes(x=hospitalized_nor_week, y=intensive_care_nor_week, color=tipo_fecha ))+
+    geom_path (color="cornflowerblue",size=0.5,alpha=0.5)+
+    geom_label(aes(label = ifelse(week > 53 ,week %% 53,week)),
+               label.padding = unit(0.15, "lines"),
+               size=3,hjust=1.1, vjust=0.5 ) + 
+    labs(x = "Hospitalizados (media semanal)", y = "UCI (media semanal)",
+         caption = "By @congosto\nFuente: @escovid19data. https://github.com/montera34/escovid19data",
+         title = chart_title,
+         subtitle="Tercera Ola (desde el 2 de diciembre). Normalizado a 100.000 habitantes") +
+    scale_colour_manual('', values = c('primera' = 'forestgreen',
+                                      'ultima' = 'red',
+                                      'otras' = 'steelblue4')) +
+    guides(color = FALSE) +   
+    theme_a()+
+    facet_wrap(~ province) +
+  ggsave(name_file )
+return(p)
+}
+
+
+
+```
+
+### 01 Andalucía
+
+Segunda Ola (desde el 3 de agosto)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=9}
+
+
+res <-  connected_scatterplot_hos_UCI (provincias,"Andalucía")
+plot(res)
+
+```
+
+###  02 Aragón
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Aragón")
+plot(res)
+
+```
+
+###  03 Asturias, Principado de
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Asturias, Principado de")
+plot(res)
+```
+
+###  04 Balears, Illes
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Balears, Illes")
+plot(res)
+
+```
+
+### 05 Canarias
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Canarias")
+plot(res)
+
+```
+
+###  06 Cantabria
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Cantabria")
+plot(res)
+
+```
+
+### 07 Castilla y León
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=9}
+res <-  connected_scatterplot_hos_UCI (provincias,"Castilla y León")
+plot(res)
+
+```
+
+### 08 Castilla l La Mancha
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=6}
+res <-  connected_scatterplot_hos_UCI (provincias,"Castilla - La Mancha")
+plot(res)
+
+```
+
+### 09 Cataluña
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=8}
+res <-  connected_scatterplot_hos_UCI (provincias,"Cataluña")
+plot(res)
+
+```
+
+### 10 Comunitat Valenciana
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Comunitat Valenciana")
+plot(res)  
+
+```
+
+###  11 Extremadura
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Extremadura")
+plot(res) 
+
+```
+
+###  12 Galicia
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=8}
+res <-  connected_scatterplot_hos_UCI (provincias,"Galicia")
+plot(res)
+
+```
+
+### 13 Madrid, Comunidad de
+
+Segunda Ola (desde el 3 de agosto)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Madrid, Comunidad de")
+plot(res)
+
+```
+
+###  14 Murcia, Región de
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Murcia, Región de")
+plot(res)
+
+```
+
+### 15 Navarra, Comunidad Foral de
+
+Segunda Ola (desde el 3 de agosto)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE, fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Navarra, Comunidad Foral de")
+plot(res)
+
+
+```
+
+###  16 País Vasco
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+
+
+#res <-  connected_scatterplot_hos_UCI (provincias,"País Vasco")
+#plot(res)
+
+```
+
+###  17 Rioja, La
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+
+res <-  connected_scatterplot_hos_UCI (provincias,"Rioja, La")
+plot(res)
+
+
+```
+
+###  18 Ceuta
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Ceuta")
+plot(res)
+
+```
+
+###  19 Melilla
+
+Segunda Ola (desde el 3 de agosto)
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE,fig.width=9, fig.height=5}
+res <-  connected_scatterplot_hos_UCI (provincias,"Melilla")
+plot(res)
+
+
+```
+
+
+
+
+
